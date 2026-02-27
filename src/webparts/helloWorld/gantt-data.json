@@ -1,0 +1,51 @@
+{
+  "tasks": [
+    {
+      "id": 1,
+      "name": "SPFx Project",
+      "expanded": true,
+      "children": [
+        {
+          "id": 2,
+          "name": "Phase 1 - Setup",
+          "expanded": true,
+          "children": [
+            { "id": 6, "name": "Create SPFx solution", "startDate": "2026-01-02", "endDate": "2026-01-05" },
+            { "id": 7, "name": "Install dependencies", "startDate": "2026-01-05", "endDate": "2026-01-06" },
+            { "id": 8, "name": "Configure build", "startDate": "2026-01-06", "endDate": "2026-01-08" }
+          ]
+        },
+        {
+          "id": 3,
+          "name": "Phase 2 - Development",
+          "expanded": true,
+          "children": [
+            { "id": 9, "name": "Implement web part", "startDate": "2026-01-08", "endDate": "2026-01-15" },
+            { "id": 10, "name": "Add Gantt integration", "startDate": "2026-01-15", "endDate": "2026-01-20" },
+            { "id": 11, "name": "Unit tests", "startDate": "2026-01-20", "endDate": "2026-01-22" }
+          ]
+        },
+        {
+          "id": 4,
+          "name": "Phase 3 - Testing & Deploy",
+          "expanded": true,
+          "children": [
+            { "id": 12, "name": "Integration testing", "startDate": "2026-01-22", "endDate": "2026-01-25" },
+            { "id": 13, "name": "Fix issues", "startDate": "2026-01-25", "endDate": "2026-01-27" },
+            { "id": 14, "name": "Package and deploy", "startDate": "2026-01-27", "endDate": "2026-01-29" }
+          ]
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    { "fromTask": 6, "toTask": 7 },
+    { "fromTask": 7, "toTask": 8 },
+    { "fromTask": 8, "toTask": 9 },
+    { "fromTask": 9, "toTask": 10 },
+    { "fromTask": 10, "toTask": 11 },
+    { "fromTask": 11, "toTask": 12 },
+    { "fromTask": 12, "toTask": 13 },
+    { "fromTask": 13, "toTask": 14 }
+  ]
+}

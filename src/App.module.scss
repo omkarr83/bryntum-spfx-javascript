@@ -1,0 +1,12 @@
+/* Bryntum Gantt CSS is loaded in HelloWorldWebPart.ts via require() */
+
+.small-text {
+    font-size : .7em;
+}
+
+.yes-button,
+.no-button {
+    flex    : 1;
+    border  : none;
+    outline : none;
+}
