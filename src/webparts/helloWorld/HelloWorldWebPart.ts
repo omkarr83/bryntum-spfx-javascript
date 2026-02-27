@@ -102,8 +102,6 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
 
     const buildGanttConfig = (tasksData: any[], dependenciesData: any[]): any => ({
       appendTo: container,
-      startDate: new Date(2026, 0, 1),
-      endDate: new Date(2026, 1, 28),
       columns: [
         { field: 'taskIndex', text: 'ID', width: 60, align: 'center' as const, sortable: true, editor: false },
         { type: 'wbs', text: 'WBS', width: 80, editor: false },
@@ -184,29 +182,17 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
 
         if (this._gantt && this._gantt.project) {
           const project = this._gantt.project;
-          if (project.taskStore && typeof project.taskStore.removeAll === 'function') {
-            project.taskStore.removeAll(true);
+          // Let Bryntum ProjectModel handle updating its own stores
+          if (typeof (project as any).loadInlineData === 'function') {
+            await (project as any).loadInlineData({
+              tasksData: hierarchicalTasks,
+              dependenciesData: dependencies,
+              resourcesData: resources,
+              assignmentsData: assignments
+            });
           }
-          if (project.dependencyStore && typeof project.dependencyStore.removeAll === 'function') {
-            project.dependencyStore.removeAll(true);
-          }
-          if (project.resourceStore && typeof project.resourceStore.removeAll === 'function') {
-            project.resourceStore.removeAll(true);
-          }
-          if (project.assignmentStore && typeof project.assignmentStore.removeAll === 'function') {
-            project.assignmentStore.removeAll(true);
-          }
-          if (project.taskStore && typeof project.taskStore.add === 'function') {
-            project.taskStore.add(hierarchicalTasks as any);
-          }
-          if (project.dependencyStore && typeof project.dependencyStore.add === 'function') {
-            project.dependencyStore.add(dependencies as any);
-          }
-          if (project.resourceStore && typeof project.resourceStore.add === 'function') {
-            project.resourceStore.add(resources as any);
-          }
-          if (project.assignmentStore && typeof project.assignmentStore.add === 'function') {
-            project.assignmentStore.add(assignments as any);
+          if (this._gantt && typeof (this._gantt as any).zoomToFit === 'function') {
+            (this._gantt as any).zoomToFit();
           }
           setStatus('Loaded ' + tasks.length + ' task(s), ' + resources.length + ' resource(s), ' + assignments.length + ' assignment(s).');
         } else {

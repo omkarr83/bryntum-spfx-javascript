@@ -4,7 +4,8 @@
  */
 export const dataverseConfig = {
   /** Dataverse environment URL (e.g. https://yourorg.crm8.dynamics.com) - no trailing slash */
-  environmentUrl: 'https://orgab553a6a.crm8.dynamics.com',
+  // environmentUrl: 'https://orgab553a6a.crm8.dynamics.com',
+  environmentUrl: 'https://org77e40fae.crm.dynamics.com',
   /** OData table/entity set for project tasks */
   tableName: 'eppm_projecttasks',
   /** Backend API base URL for Export/Import MS Project (e.g. http://localhost:3001/api) - no trailing slash */
@@ -25,8 +26,10 @@ function getRedirectUri(): string {
 
 export const msalConfig = {
   auth: {
-    clientId: 'd7cedaf0-7f7e-4779-9985-37d8ac9fb8c0',
-    authority: 'https://login.microsoftonline.com/cf50b276-a7b3-4cd0-bd1f-a3a13316b1a5',
+    // clientId: 'd7cedaf0-7f7e-4779-9985-37d8ac9fb8c0',
+    // authority: 'https://login.microsoftonline.com/cf50b276-a7b3-4cd0-bd1f-a3a13316b1a5',
+    clientId: '88994ec9-c137-4cb2-828a-2e0ed12ccaf0',
+    authority: 'https://login.microsoftonline.com/6cc11140-3317-48cd-99d9-25abe8e51d67',
     redirectUri: getRedirectUri()
   },
   cache: {
