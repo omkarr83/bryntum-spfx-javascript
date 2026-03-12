@@ -69,6 +69,44 @@ export interface BryntumDependency {
   lag?: number;
 }
 
+/**
+ * Safely convert a date value to ISO string for Dataverse.
+ * Returns format: "YYYY-MM-DDT12:00:00Z".
+ */
+function toSafeISOString(value: string | Date | number | null | undefined): string | undefined {
+  if (value == null || value === '') return undefined;
+  try {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      const dateMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (dateMatch) {
+        return dateMatch[1] + 'T12:00:00Z';
+      }
+    }
+    var date = value instanceof Date ? value : new Date(value as string | number);
+    if (isNaN(date.getTime())) return undefined;
+    var year = date.getUTCFullYear();
+    var monthNum = date.getUTCMonth() + 1;
+    var dayNum = date.getUTCDate();
+    var month = monthNum < 10 ? '0' + monthNum : String(monthNum);
+    var day = dayNum < 10 ? '0' + dayNum : String(dayNum);
+    return year + '-' + month + '-' + day + 'T12:00:00Z';
+  } catch (e) {
+    return undefined;
+  }
+}
+
+/**
+ * Subtract days from a YYYY-MM-DD date string.
+ */
+function subtractDaysFromDateString(dateStr: string, days: number): string | undefined {
+  if (!dateStr || typeof dateStr !== 'string') return undefined;
+  var date = new Date(dateStr + 'T12:00:00Z');
+  if (isNaN(date.getTime())) return undefined;
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().split('T')[0];
+}
+
 function formatDateToYYYYMMDD(dateString: string | null | undefined): string | undefined {
   if (!dateString) return undefined;
   try {
@@ -107,6 +145,28 @@ const CONSTRAINT_TYPE_MAP: Record<number, string> = {
 
 function getConstraintTypeName(constraintType: number): string {
   return CONSTRAINT_TYPE_MAP[constraintType] || 'assoonaspossible';
+}
+
+function getConstraintTypeValue(constraintType: string): number {
+  var map: Record<string, number> = {
+    'assoonaspossible': 100000000,
+    'asap': 100000000,
+    'aslateaspossible': 100000001,
+    'startnoearlierthan': 100000004,
+    'snet': 100000004,
+    'startnolaterthan': 100000005,
+    'snlt': 100000005,
+    'finishnoearlierthan': 100000006,
+    'fnet': 100000006,
+    'finishnolaterthan': 100000007,
+    'fnlt': 100000007,
+    'muststarton': 100000002,
+    'mso': 100000002,
+    'mustfinishon': 100000003,
+    'mfo': 100000003
+  };
+  var key = constraintType ? String(constraintType).toLowerCase() : '';
+  return map[key] != null ? map[key] : 100000000;
 }
 
 export function dataverseToBryntumTask(dataverseTask: DataverseTask): BryntumTask {
@@ -151,6 +211,104 @@ export function dataverseToBryntumTask(dataverseTask: DataverseTask): BryntumTas
   }
 
   return bryntumTask;
+}
+
+/**
+ * Transform Bryntum task (from Gantt) to Dataverse payload.
+ * Mirrors the server-side bryntumToDataverseTask for SPFx usage.
+ */
+export function bryntumToDataverseTask(bryntumTask: BryntumTask): Partial<DataverseTask> {
+  const dataverseTask: Partial<DataverseTask> = {};
+
+  const projectId = (bryntumTask as any).projectId ?? (bryntumTask as any).eppm_projectid;
+  if (typeof projectId === 'string' && projectId.trim()) {
+    (dataverseTask as any).eppm_projectid = projectId.trim();
+  }
+
+  const taskName = (bryntumTask as any).name ?? (bryntumTask as any).taskName ?? (bryntumTask as any).text ?? (bryntumTask as any).eppm_name;
+  if (taskName !== undefined && taskName !== null) {
+    dataverseTask.eppm_name = typeof taskName === 'string' ? taskName : String(taskName);
+  }
+
+  if (bryntumTask.startDate && typeof bryntumTask.startDate === 'string' && bryntumTask.startDate.trim()) {
+    const startStr = bryntumTask.startDate.trim();
+    const startIso = toSafeISOString(startStr.indexOf('T') >= 0 ? startStr : startStr + 'T12:00:00Z');
+    if (startIso) dataverseTask.eppm_startdate = startIso;
+  }
+
+  if (bryntumTask.endDate && typeof bryntumTask.endDate === 'string') {
+    const inclusiveFinish = subtractDaysFromDateString(bryntumTask.endDate, 1);
+    if (inclusiveFinish) {
+      const finishIso = toSafeISOString(inclusiveFinish + 'T12:00:00Z');
+      if (finishIso) dataverseTask.eppm_finishdate = finishIso;
+    }
+  }
+
+  if ((bryntumTask as any).rawDuration !== undefined) {
+    dataverseTask.eppm_taskduration = (bryntumTask as any).rawDuration as number;
+  } else if (bryntumTask.duration !== undefined) {
+    dataverseTask.eppm_taskduration = bryntumTask.duration;
+  }
+
+  if ((bryntumTask as any).taskIndex !== undefined) {
+    (dataverseTask as any).eppm_taskindex = (bryntumTask as any).taskIndex;
+  }
+
+  if (bryntumTask.percentDone !== undefined) {
+    (dataverseTask as any).eppm_pocpercentage = bryntumTask.percentDone;
+  }
+
+  if (bryntumTask.effort !== undefined) {
+    (dataverseTask as any).eppm_taskwork = bryntumTask.effort;
+  }
+
+  if (bryntumTask.parentId !== undefined && bryntumTask.parentId !== null) {
+    dataverseTask.eppm_parenttaskid = typeof bryntumTask.parentId === 'string'
+      ? bryntumTask.parentId
+      : String(bryntumTask.parentId);
+  }
+
+  const notes = (bryntumTask as any).notes ?? (bryntumTask as any).note;
+  if (typeof notes === 'string') {
+    (dataverseTask as any).eppm_notes = notes.trim() === '' ? null : notes;
+  }
+
+  const successors = (bryntumTask as any).successors ?? (bryntumTask as any).successor;
+  if (typeof successors === 'string') {
+    (dataverseTask as any).eppm_successors = successors.trim() === '' ? null : successors;
+  }
+
+  if (bryntumTask.calendar !== undefined) {
+    dataverseTask.eppm_calendarname = bryntumTask.calendar || undefined;
+  }
+  if (bryntumTask.ignoreResourceCalendar !== undefined) {
+    dataverseTask.eppm_ignoreresourcecalendar = bryntumTask.ignoreResourceCalendar;
+  }
+  if (bryntumTask.effortDriven !== undefined) {
+    dataverseTask.eppm_effortdriven = bryntumTask.effortDriven;
+  }
+  if (bryntumTask.rollup !== undefined) {
+    dataverseTask.eppm_rollup = bryntumTask.rollup;
+  }
+  if (bryntumTask.inactive !== undefined) {
+    dataverseTask.eppm_inactive = bryntumTask.inactive;
+  }
+  if (bryntumTask.manuallyScheduled !== undefined) {
+    dataverseTask.eppm_manuallyscheduled = bryntumTask.manuallyScheduled;
+  }
+  if (bryntumTask.projectBorder !== undefined) {
+    dataverseTask.eppm_projectborder = bryntumTask.projectBorder;
+  }
+
+  if (bryntumTask.constraintType) {
+    dataverseTask.eppm_constrainttype = getConstraintTypeValue(bryntumTask.constraintType);
+  }
+  if (bryntumTask.constraintDate) {
+    const constraintIso = toSafeISOString(bryntumTask.constraintDate);
+    if (constraintIso) dataverseTask.eppm_constraintdate = constraintIso;
+  }
+
+  return dataverseTask;
 }
 
 export function buildTaskHierarchy(tasks: DataverseTask[]): BryntumTask[] {

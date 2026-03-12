@@ -15,10 +15,28 @@ require('@bryntum/gantt/svalbard-light.css');
 
 import styles from './HelloWorldWebPart.module.scss';
 import * as strings from 'HelloWorldWebPartStrings';
-import { getAccessToken, ensureLoginOrRedirect, isAuthenticated } from './dataverse/auth.service';
+import { getAccessToken, ensureLoginOrRedirect, isAuthenticated, processRedirectOnLoad } from './dataverse/auth.service';
 import { fetchTasksFromDataverse, fetchAssignmentsFromDataverse } from './dataverse/dataverseApi';
-import { buildTaskHierarchy, buildDependencies } from './dataverse/dataTransformer';
-import { dataverseConfig } from './dataverse/dataverseConfig';
+import { buildTaskHierarchy, buildDependencies, bryntumToDataverseTask } from './dataverse/dataTransformer';
+import {
+  createTask,
+  updateTask,
+  createAssignment,
+  updateAssignment,
+  deleteAssignment,
+  getTasksForProject,
+  buildAssignmentPayload,
+  isGuid
+} from './dataverse/dataverseCrud';
+import {
+  parseMspdiXmlBrowser,
+  convertImportedDataToBryntum,
+  convertImportedDataToDataverse,
+  buildPredecessorStringForTask,
+  buildSuccessorStringForTask,
+  convertToMspdiFormatFromDataverse,
+  generateMspdiXmlBrowser
+} from './dataverse/mspdiBrowser';
 
 const PROJECT_ID_OPTIONS = [
   { value: '', text: '-- Select Project --' },
@@ -26,8 +44,6 @@ const PROJECT_ID_OPTIONS = [
   { value: '35d56841-1466-47b7-bd18-0e697474fdfd', text: 'Design of SLS Dispenser' },
   { value: '613dde01-0492-f011-b41c-6045bdc5e503', text: 'Sample - Test' }
 ];
-
-const API_URL = dataverseConfig.apiBaseUrl || 'http://localhost:3001/api';
 
 export interface IHelloWorldWebPartProps {
   description: string;
@@ -47,7 +63,6 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
 
     const containerId = `bryntum-gantt-${this.context.instanceId}`;
     const defaultProjectId = this.properties.defaultProjectId || '';
-    const isAuth = isAuthenticated();
     const projectOptionsHtml = PROJECT_ID_OPTIONS.map(function (opt) {
       return '<option value="' + (opt.value || '').replace(/"/g, '&quot;') + '"' + (opt.value === defaultProjectId ? ' selected' : '') + '>' + (opt.text || opt.value || '').replace(/</g, '&lt;') + '</option>';
     }).join('');
@@ -65,7 +80,7 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
             <select class="${styles.input}" id="projectId-${this.context.instanceId}">${projectOptionsHtml}</select>
           </div>
         </div>
-        <span class="${styles.status}" id="status-${this.context.instanceId}">${!isAuth ? 'Signing you in...' : ''}</span>
+        <span class="${styles.status}" id="status-${this.context.instanceId}">Signing you in...</span>
         <div class="${styles.ganttContainer}">
           <div id="${containerId}" class="${styles.ganttHost}"></div>
         </div>
@@ -100,6 +115,8 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
       return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
     };
 
+    let isLoading = false;
+
     const buildGanttConfig = (tasksData: any[], dependenciesData: any[]): any => ({
       appendTo: container,
       columns: [
@@ -133,6 +150,204 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
 
     if (container) {
       this._gantt = new Gantt(buildGanttConfig([], []) as any);
+      const project = (this._gantt as any).project;
+      const taskStore = project && project.taskStore;
+      if (taskStore && typeof taskStore.on === 'function') {
+        taskStore.on('update', async (args: any) => {
+          try {
+            if (isLoading) return;
+            const record = args && (args.record || args.records && args.records[0]);
+            if (!record) return;
+            let id = record.id || record.data && (record.data.id || record.data.eppm_projecttaskid);
+            if (!id || !isGuid(String(id))) return;
+            const patch = bryntumToDataverseTask(record.data || record);
+            let token = await getAccessToken();
+            if (!token) {
+              token = await ensureLoginOrRedirect();
+            }
+            if (!token) return;
+            await updateTask(token, String(id), patch);
+          } catch (e) {
+            // swallow errors for now
+          }
+        });
+      }
+
+      const dependencyStore = project && project.dependencyStore;
+      if (dependencyStore && typeof dependencyStore.on === 'function' && taskStore && typeof taskStore.forEach === 'function') {
+        dependencyStore.on('change', async () => {
+          try {
+            if (isLoading) return;
+            let token = await getAccessToken();
+            if (!token) {
+              token = await ensureLoginOrRedirect();
+            }
+            if (!token) return;
+
+            const deps: any[] = [];
+            const affectedTaskIds = new Set<string>();
+            dependencyStore.forEach(function (rec: any) {
+              const d = rec && (rec.data || rec);
+              if (!d) return;
+              const fromId = d.fromTask != null ? String(d.fromTask) : '';
+              const toId = d.toTask != null ? String(d.toTask) : '';
+              const typeVal = typeof d.type === 'number' ? d.type : d.type == null ? 2 : Number(d.type);
+              const lagVal = d.lag != null ? Number(d.lag) : 0;
+              deps.push({ fromTask: fromId, toTask: toId, type: typeVal, lag: lagVal });
+              if (fromId) affectedTaskIds.add(fromId);
+              if (toId) affectedTaskIds.add(toId);
+            });
+
+            if (deps.length === 0 || affectedTaskIds.size === 0) {
+              return;
+            }
+
+            const TYPE_TO_STR: Record<number, string> = { 0: 'SS', 1: 'SF', 2: 'FS', 3: 'FF' };
+
+            const buildPred = function (taskId: string): string {
+              const preds: any[] = [];
+              for (let i = 0; i < deps.length; i++) {
+                const d = deps[i];
+                if (d.toTask === taskId) preds.push(d);
+              }
+              if (preds.length === 0) return '';
+              const tokens: string[] = [];
+              for (let i = 0; i < preds.length; i++) {
+                const dep = preds[i];
+                const fromId = dep.fromTask;
+                const typeStr = TYPE_TO_STR[dep.type] || 'FS';
+                let token = String(fromId) + typeStr;
+                const lag = dep.lag;
+                if (lag != null && lag !== 0 && !isNaN(lag)) {
+                  token += (lag > 0 ? '+' : '') + lag + 'd';
+                }
+                tokens.push(token);
+              }
+              return tokens.join(';');
+            };
+
+            const buildSucc = function (taskId: string): string {
+              const succs: any[] = [];
+              for (let i = 0; i < deps.length; i++) {
+                const d = deps[i];
+                if (d.fromTask === taskId) succs.push(d);
+              }
+              if (succs.length === 0) return '';
+              const tokens: string[] = [];
+              for (let i = 0; i < succs.length; i++) {
+                const dep = succs[i];
+                const toId = dep.toTask;
+                const typeStr = TYPE_TO_STR[dep.type] || 'FS';
+                let token = String(toId) + typeStr;
+                const lag = dep.lag;
+                if (lag != null && lag !== 0 && !isNaN(lag)) {
+                  token += (lag > 0 ? '+' : '') + lag + 'd';
+                }
+                tokens.push(token);
+              }
+              return tokens.join(';');
+            };
+
+            const tasksToUpdate: Array<{ id: string; payload: Record<string, unknown> }> = [];
+            taskStore.forEach(function (rec: any) {
+              const r = rec && (rec.data || rec);
+              if (!r) return;
+              const rawId = rec.id || r.id || r.eppm_projecttaskid;
+              const idStr = rawId != null ? String(rawId) : '';
+              if (!idStr || !isGuid(idStr) || !affectedTaskIds.has(idStr)) return;
+              const predStr = buildPred(idStr);
+              const succStr = buildSucc(idStr);
+              const payload: Record<string, unknown> = {
+                eppm_predecessor: predStr ? predStr : null,
+                eppm_successors: succStr ? succStr : null
+              };
+              tasksToUpdate.push({ id: idStr, payload: payload });
+            });
+
+            for (let i = 0; i < tasksToUpdate.length; i++) {
+              const t = tasksToUpdate[i];
+              await updateTask(token, t.id, t.payload);
+            }
+          } catch (e) {
+            // swallow errors for now
+          }
+        });
+      }
+
+      const assignmentStore = project && project.assignmentStore;
+      if (assignmentStore && typeof assignmentStore.on === 'function') {
+        const syncAssignmentRecords = async function (recordsArg: any, action: 'add' | 'update' | 'remove'): Promise<void> {
+          if (isLoading) return;
+          const records = Array.isArray(recordsArg) ? recordsArg : (recordsArg ? [recordsArg] : []);
+          if (!records.length) return;
+          let token = await getAccessToken();
+          if (!token) {
+            token = await ensureLoginOrRedirect();
+          }
+          if (!token) return;
+          const projectIdForAssignments = getSelectedProjectId().trim();
+          if (!projectIdForAssignments) return;
+          for (let i = 0; i < records.length; i++) {
+            const rec = records[i];
+            const r = rec && (rec.data || rec);
+            if (!r) continue;
+            const taskId = r.event != null ? String(r.event) : '';
+            if (!taskId || !isGuid(taskId)) continue;
+            const resourceId = r.resource != null ? String(r.resource) : '';
+            if (!resourceId) continue;
+            const unitsVal = r.units != null ? Number(r.units) : 100;
+            if (action === 'remove') {
+              const assignId = rec.id != null ? String(rec.id) : '';
+              if (assignId && isGuid(assignId)) {
+                try {
+                  await deleteAssignment(token, assignId);
+                } catch (e) {
+                  // ignore delete errors
+                }
+              }
+              continue;
+            }
+            const payload = buildAssignmentPayload(projectIdForAssignments, taskId, resourceId, unitsVal);
+            const existingId = rec.id != null ? String(rec.id) : '';
+            if (existingId && isGuid(existingId)) {
+              try {
+                await updateAssignment(token, existingId, payload);
+              } catch (updateErr) {
+                const msg = updateErr instanceof Error ? updateErr.message || '' : String(updateErr);
+                if (msg.indexOf('Does Not Exist') !== -1 || msg.indexOf('does not exist') !== -1) {
+                  const created = await createAssignment(token, payload);
+                  const createdId = created && created.eppm_taskassignmentsid;
+                  if (createdId && typeof rec.set === 'function') {
+                    rec.set('id', createdId);
+                  }
+                } else {
+                  // rethrow unexpected errors
+                  throw updateErr;
+                }
+              }
+            } else {
+              const createdOnAdd = await createAssignment(token, payload);
+              const createdIdOnAdd = createdOnAdd && createdOnAdd.eppm_taskassignmentsid;
+              if (createdIdOnAdd && typeof rec.set === 'function') {
+                rec.set('id', createdIdOnAdd);
+              }
+            }
+          }
+        };
+
+        assignmentStore.on('add', function (args: any) {
+          const recs = args && (args.records || args.record);
+          syncAssignmentRecords(recs, 'add');
+        });
+        assignmentStore.on('update', function (args: any) {
+          const rec = args && (args.record || args.records && args.records[0]);
+          syncAssignmentRecords(rec, 'update');
+        });
+        assignmentStore.on('remove', function (args: any) {
+          const recs = args && (args.records || args.record);
+          syncAssignmentRecords(recs, 'remove');
+        });
+      }
     }
 
     const loadFromDataverse = async (projectIdArg?: string): Promise<void> => {
@@ -142,6 +357,7 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
       if (projectIdSelect) projectIdSelect.disabled = true;
       setStatus(pid ? 'Loading...' : '');
       try {
+        isLoading = true;
         if (!pid) {
           if (this._gantt && this._gantt.project) {
             const project = this._gantt.project;
@@ -202,6 +418,7 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
         const message = err instanceof Error ? err.message : String(err);
         setStatus(message, true);
       } finally {
+        isLoading = false;
         if (exportBtn) exportBtn.disabled = false;
         if (importBtn) importBtn.disabled = false;
         if (projectIdSelect) projectIdSelect.disabled = false;
@@ -227,17 +444,31 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
           exportBtn.textContent = 'Exporting...';
           exportBtn.disabled = true;
         }
+        const tasks = await fetchTasksFromDataverse(token, selectedProjectId);
+        const projectTaskIds = new Set<string>();
+        tasks.forEach(function (t: { eppm_projecttaskid?: string }) {
+          if (t.eppm_projecttaskid) projectTaskIds.add(t.eppm_projecttaskid);
+        });
+        const { resources, assignments } = await fetchAssignmentsFromDataverse(token, projectTaskIds);
+        const dependencies = buildDependencies(tasks);
+        const depsForExport = dependencies.map(function (d) {
+          return {
+            fromTask: d.fromTask != null ? String(d.fromTask) : undefined,
+            toTask: d.toTask != null ? String(d.toTask) : undefined,
+            type: d.type,
+            lag: d.lag
+          };
+        });
+        const mspdiData = convertToMspdiFormatFromDataverse(
+          tasks as unknown as Array<Record<string, unknown>>,
+          resources,
+          assignments,
+          depsForExport,
+          'Exported Project'
+        );
+        const xmlContent = generateMspdiXmlBrowser(mspdiData);
         const utcNow = new Date().toISOString().replace(/[:.]/g, '-');
         const exportFilename = selectedProjectId + '-' + utcNow + '.xml';
-        const response = await fetch(API_URL + '/tasks/export/mpp?projectId=' + encodeURIComponent(selectedProjectId) + '&projectName=' + encodeURIComponent(exportFilename), {
-          method: 'GET',
-          headers: { Authorization: 'Bearer ' + token, Accept: 'application/xml' }
-        });
-        if (!response.ok) {
-          const errorData = await response.json().catch(function () { return { error: 'Export failed' }; });
-          throw new Error(errorData.error || 'Export failed with status ' + response.status);
-        }
-        const xmlContent = await response.text();
         const blob = new Blob([xmlContent], { type: 'application/xml' });
         const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -285,28 +516,111 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
           }
           if (importBtn) importBtn.disabled = true;
           setStatus('Importing...');
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('projectId', selectedProjectId);
-          const response = await fetch(API_URL + '/tasks/import/mpp?projectId=' + encodeURIComponent(selectedProjectId), {
-            method: 'POST',
-            headers: { Authorization: 'Bearer ' + token },
-            body: formData
+          const xmlContent = await file.text();
+          const importedData = parseMspdiXmlBrowser(xmlContent);
+          const bryntumData = convertImportedDataToBryntum(importedData);
+          const dataverseData = convertImportedDataToDataverse(bryntumData, selectedProjectId);
+          const importIdToDataverseId = new Map<string, string>();
+          const getLevel = (importId: unknown): number => {
+            for (let i = 0; i < bryntumData.tasks.length; i++) {
+              if (bryntumData.tasks[i].id === importId) return (bryntumData.tasks[i]._outlineLevel as number) || 0;
+            }
+            return 0;
+          };
+          const sortedTasks = dataverseData.tasks.slice().sort(function (a, b) {
+            return getLevel(a._importId) - getLevel(b._importId);
           });
-          if (!response.ok) {
-            const errorText = await response.text();
-            let errorMessage = 'Import failed with status ' + response.status;
-            try {
-              const errorJson = JSON.parse(errorText);
-              errorMessage = errorJson.error || errorMessage;
-            } catch (e) { /* ignore */ }
-            throw new Error(errorMessage);
+          for (const task of sortedTasks) {
+            const taskPayload: Record<string, unknown> = {
+              eppm_name: task.eppm_name,
+              eppm_startdate: task.eppm_startdate,
+              eppm_finishdate: task.eppm_finishdate,
+              eppm_taskduration: task.eppm_taskduration,
+              eppm_pocpercentage: task.eppm_pocpercentage,
+              eppm_taskwork: task.eppm_taskwork,
+              eppm_notes: task.eppm_notes,
+              eppm_projectid: selectedProjectId,
+              eppm_taskindex: task.eppm_taskindex
+            };
+            if (task._parentImportId) {
+              const parentId = importIdToDataverseId.get(task._parentImportId as string);
+              if (parentId) taskPayload.eppm_parenttaskid = parentId;
+            }
+            const existingTaskId = task._dataverseTaskId as string | undefined;
+            if (existingTaskId && isGuid(existingTaskId)) {
+              try {
+                await updateTask(token, existingTaskId, taskPayload);
+                importIdToDataverseId.set(task._importId as string, existingTaskId);
+              } catch (updateErr) {
+                const msg = updateErr instanceof Error ? updateErr.message || '' : String(updateErr);
+                if (msg.indexOf('Does Not Exist') !== -1 || msg.indexOf('does not exist') !== -1) {
+                  const createdOnUpdateFail = await createTask(token, taskPayload);
+                  const createdIdOnUpdateFail = createdOnUpdateFail && createdOnUpdateFail.eppm_projecttaskid;
+                  if (createdIdOnUpdateFail) {
+                    importIdToDataverseId.set(task._importId as string, createdIdOnUpdateFail);
+                  }
+                } else {
+                  throw updateErr;
+                }
+              }
+            } else {
+              const created = await createTask(token, taskPayload);
+              const createdId = created && created.eppm_projecttaskid;
+              if (createdId) importIdToDataverseId.set(task._importId as string, createdId);
+            }
+          }
+          for (const task of sortedTasks) {
+            const dataverseId = importIdToDataverseId.get(task._importId as string);
+            if (!dataverseId) continue;
+            const predStr = buildPredecessorStringForTask(task._importId as string, bryntumData.dependencies, importIdToDataverseId);
+            const succStr = buildSuccessorStringForTask(task._importId as string, bryntumData.dependencies, importIdToDataverseId);
+            if (predStr || succStr) {
+              const updatePayload: Record<string, unknown> = {};
+              if (predStr) updatePayload.eppm_predecessor = predStr;
+              if (succStr) updatePayload.eppm_successors = succStr;
+              await updateTask(token, dataverseId, updatePayload);
+            }
+          }
+          const taskNameToDataverseId = new Map<string, string>();
+          const freshTasks = await getTasksForProject(token, selectedProjectId);
+          freshTasks.forEach(function (t) {
+            if (t.eppm_projecttaskid && t.eppm_name) taskNameToDataverseId.set(t.eppm_name.toLowerCase().trim(), t.eppm_projecttaskid);
+          });
+          for (const assignment of dataverseData.assignments) {
+            let taskNameForAssign = '';
+            for (let ti = 0; ti < dataverseData.tasks.length; ti++) {
+              if (dataverseData.tasks[ti]._importId === assignment.taskImportId) {
+                taskNameForAssign = (dataverseData.tasks[ti].eppm_name as string) || '';
+                break;
+              }
+            }
+            const taskDataverseId = importIdToDataverseId.get(assignment.taskImportId as string) ||
+              taskNameToDataverseId.get(taskNameForAssign.toLowerCase().trim());
+            if (!taskDataverseId || !isGuid(taskDataverseId)) continue;
+            const units = (assignment.units as number) ?? 100;
+            const payload = buildAssignmentPayload(selectedProjectId, taskDataverseId, assignment.resourceEmail as string, units, assignment.startDate as string, assignment.finishDate as string);
+            const existingAssignId = assignment._dataverseAssignmentId as string | undefined;
+            if (existingAssignId && isGuid(existingAssignId)) {
+              try {
+                await updateAssignment(token, existingAssignId, payload);
+              } catch (updateAssignErr) {
+                const msg = updateAssignErr instanceof Error ? updateAssignErr.message || '' : String(updateAssignErr);
+                if (msg.indexOf('Does Not Exist') !== -1 || msg.indexOf('does not exist') !== -1) {
+                  await createAssignment(token, payload);
+                } else {
+                  throw updateAssignErr;
+                }
+              }
+            } else {
+              await createAssignment(token, payload);
+            }
           }
           setStatus('Import completed. Reloading...');
           await loadFromDataverse(selectedProjectId);
         } catch (err: any) {
-          alert('Import failed: ' + (err && err.message ? err.message : String(err)));
-          setStatus(err && err.message ? err.message : 'Import failed', true);
+          const message = err && err.message ? err.message : String(err);
+          alert('Import failed: ' + message);
+          setStatus(message, true);
         } finally {
           if (importBtn) importBtn.disabled = false;
           target.value = '';
@@ -325,19 +639,28 @@ export default class HelloWorldWebPart extends BaseClientSideWebPart<IHelloWorld
       });
     }
 
-    if (!isAuth) {
-      ensureLoginOrRedirect().then(function (token) {
-        if (token) {
-          setStatus('');
-          const pid = defaultProjectId.trim();
-          if (pid) loadFromDataverse(pid);
-        }
-      });
-    } else {
-      setStatus('');
-      const pid = defaultProjectId.trim();
-      if (pid) loadFromDataverse(pid);
-    }
+    // Process MSAL redirect first (when returning from Microsoft login), then check auth.
+    processRedirectOnLoad().then(function () {
+      const isAuth = isAuthenticated();
+      if (!isAuth) {
+        ensureLoginOrRedirect().then(function (token) {
+          if (token) {
+            setStatus('');
+            const pid = defaultProjectId.trim();
+            if (pid) loadFromDataverse(pid);
+          } else {
+            setStatus('Redirecting to sign in...');
+          }
+        }).catch(function (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setStatus('Sign-in error: ' + msg, true);
+        });
+      } else {
+        setStatus('');
+        const pid = defaultProjectId.trim();
+        if (pid) loadFromDataverse(pid);
+      }
+    });
   }
 
   public dispose(): void {

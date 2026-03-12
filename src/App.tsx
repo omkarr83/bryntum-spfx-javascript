@@ -13,7 +13,7 @@ const App: FunctionComponent = () => {
     const ganttInstanceRef = useRef<Gantt | null>(null);
 
     useEffect(() => {
-        const initializeGantt = async () => {
+        const initializeGantt = async (): Promise<void> => {
             try {
                 console.log('[App] Initializing Gantt component...');
 
@@ -57,7 +57,7 @@ const App: FunctionComponent = () => {
                 console.log('[App] Creating Gantt props...');
 
                 // Create Gantt props with token ready
-                const handleEditClick = (record: TaskModel, grid: Gantt) => {
+                const handleEditClick = (record: TaskModel, grid: Gantt): void => {
                     grid.editTask(record);
                 };
 
@@ -69,9 +69,15 @@ const App: FunctionComponent = () => {
 
                 setIsTokenReady(true);
                 console.log('[App] ✓ Gantt component ready with token');
-            } catch (err: any) {
+            } catch (err) {
                 console.error('[App] Error initializing Gantt:', err);
-                setError(`Failed to initialize: ${err.message || 'Unknown error'}`);
+                const message =
+                    err instanceof Error
+                        ? err.message
+                        : typeof err === 'string'
+                            ? err
+                            : 'Unknown error';
+                setError(`Failed to initialize: ${message}`);
             }
         };
 

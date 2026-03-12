@@ -4,33 +4,40 @@
  */
 import * as React from 'react';
 import { Component } from 'react';
-export default class DemoEditor extends Component {
-    state = { value : false };
 
-    yesButton: HTMLElement | null = null;
-    noButton: HTMLElement | null = null;
+interface DemoEditorState {
+    value: boolean;
+}
+
+export default class DemoEditor extends Component<unknown, DemoEditorState> {
+    state: DemoEditorState = { value: false };
+
+    yesButton: HTMLButtonElement | null = null;
+    noButton: HTMLButtonElement | null = null;
 
     //region Cell editing interface, required functions
 
     // Should return the value to be applied when editing finishes
-    getValue() {
+    getValue(): boolean {
         return this.state.value;
     }
 
     // React setState is asynchronous so we return Promise which is resolved when setState finishes
-    setValue(value: boolean) {
-        return new Promise(resolve => this.setState({ value }, () => resolve(value)));
+    setValue(value: boolean): Promise<boolean> {
+        return new Promise<boolean>(resolve => {
+            this.setState({ value }, () => resolve(value));
+        });
     }
 
     // Invalid editors are note allowed to close (unless grid is so configured). Implement this function to handle
     // validation of your editor
-    isValid() {
+    isValid(): boolean {
         // This simple editor is always valid
         return true;
     }
 
     // Called when editing starts, to set focus at the desired place in your editor
-    focus() {
+    focus(): void {
         if (this.state.value) {
             this.noButton?.focus();
         }
@@ -41,23 +48,25 @@ export default class DemoEditor extends Component {
 
     //endregion
 
-    onYesClick() {
-        this.setValue(true);
+    onYesClick(): void {
+        void this.setValue(true);
         this.noButton?.focus();
     }
 
-    onNoClick() {
-        this.setValue(false);
+    onNoClick(): void {
+        void this.setValue(false);
         this.yesButton?.focus();
     }
 
-    render() {
+    render(): JSX.Element {
         return (
             <>
                 <button
-                    className="yes-button"
+                    className="yesButton"
                     tabIndex={-1}
-                    ref={el => (this.yesButton = el)}
+                    ref={el => {
+                        this.yesButton = el;
+                    }}
                     style={{
                         background : this.state.value ? '#D5F5E3' : '#F2F3F4'
                     }}
@@ -66,9 +75,11 @@ export default class DemoEditor extends Component {
                     Yes
                 </button>
                 <button
-                    className="no-button"
+                    className="noButton"
                     tabIndex={-1}
-                    ref={el => (this.noButton = el)}
+                    ref={el => {
+                        this.noButton = el;
+                    }}
                     style={{
                         background : this.state.value ? '#F2F3F4' : '#F5B7B1'
                     }}

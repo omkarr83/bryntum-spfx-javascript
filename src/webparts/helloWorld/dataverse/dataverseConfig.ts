@@ -1,6 +1,14 @@
 /**
  * Dataverse and MSAL configuration for SPFx web part.
  * Update these values to match your Azure AD app and Dataverse environment.
+ *
+ * Azure AD app registration checklist (Azure Portal > App registrations > Your app):
+ * 1. Authentication > Platform configurations: Add "Single-page application".
+ * 2. Redirect URIs: Add the exact URL(s) where the web part runs (no query, no hash):
+ *    - Workbench: https://mashira365.sharepoint.com/_layouts/15/workbench.aspx
+ *    - Site page: https://mashira365.sharepoint.com/sites/YourSite/SitePages/YourPage.aspx
+ * 3. Under "Implicit grant and hybrid flows": leave unchecked (SPA uses auth code + PKCE).
+ * 4. API permissions: Add Dataverse (e.g. your org's Dynamics CRM) with scope and grant admin consent if required.
  */
 export const dataverseConfig = {
   /** Dataverse environment URL (e.g. https://yourorg.crm8.dynamics.com) - no trailing slash */
@@ -8,8 +16,8 @@ export const dataverseConfig = {
   environmentUrl: 'https://org77e40fae.crm.dynamics.com',
   /** OData table/entity set for project tasks */
   tableName: 'eppm_projecttasks',
-  /** Backend API base URL for Export/Import MS Project (e.g. http://localhost:3001/api) - no trailing slash */
-  apiBaseUrl: 'http://localhost:3001/api'
+  /** Not used by this web part: import/export run in the browser (Dataverse + MSPDI in mspdiBrowser.ts). Kept only for reference if you add other features that need a backend. */
+  apiBaseUrl: ''
 };
 
 /**
@@ -22,6 +30,7 @@ function getRedirectUri(): string {
   if (typeof window === 'undefined') return '';
   // Use full URL so redirect returns to the same page (workbench or site page)
   return window.location.href.split('?')[0].split('#')[0];
+  // window.location.origin;
 }
 
 export const msalConfig = {

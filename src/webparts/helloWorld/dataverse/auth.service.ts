@@ -45,8 +45,10 @@ export async function getMsalInstance(): Promise<PublicClientApplication> {
     await msalInstance.initialize();
   }
   const response = await msalInstance.handleRedirectPromise();
-  if (response && response.accessToken && response.expiresOn) {
-    const expiresIn = Math.floor((response.expiresOn.getTime() - Date.now()) / 1000);
+  if (response && response.accessToken) {
+    const expiresIn = response.expiresOn
+      ? Math.floor((response.expiresOn.getTime() - Date.now()) / 1000)
+      : 3600; // default 1h if missing
     storeToken(response.accessToken, expiresIn);
   }
   return msalInstance;
@@ -125,18 +127,57 @@ export async function loginRedirect(): Promise<void> {
 }
 
 /**
- * Ensure user is signed in: try silent token first, then redirect to login if needed.
- * Call on first load; no login button required. After redirect, page reloads with token.
+ * Process redirect result from Microsoft login (hash/fragment).
+ * Call this as early as possible when the webpart loads so we don't miss the token
+ * and avoid a redirect loop. Idempotent.
+ */
+export async function processRedirectOnLoad(): Promise<void> {
+  await getMsalInstance();
+}
+
+/**
+ * Ensure user is signed in: try silent token first, then popup (to avoid redirect loop),
+ * then redirect only if popup fails (e.g. blocked). Call on first load.
  */
 export async function ensureLoginOrRedirect(): Promise<string | null> {
-  const token = await getAccessToken();
+  let token = await getAccessToken();
   if (token) return token;
+
   const instance = await getMsalInstance();
-  const accounts = instance.getAllAccounts();
+  let accounts = instance.getAllAccounts();
+
+  // If URL has auth response in hash, process it once more (in case handleRedirectPromise wasn't run yet)
+  const hash = typeof window !== 'undefined' ? window.location.hash : '';
+  if (hash && (hash.indexOf('access_token') !== -1 || hash.indexOf('code=') !== -1)) {
+    await getMsalInstance(); // handleRedirectPromise is idempotent; may have been consumed
+    token = getStoredToken();
+    if (token) return token;
+    accounts = instance.getAllAccounts();
+  }
+
   if (accounts.length === 0) {
+    // Prefer popup to avoid full-page redirect and hash-handling issues in SharePoint workbench
+    try {
+      const popupResult = await instance.loginPopup({ scopes: [dataverseScope] });
+      if (popupResult && popupResult.accessToken && popupResult.expiresOn) {
+        const expiresIn = Math.floor((popupResult.expiresOn.getTime() - Date.now()) / 1000);
+        storeToken(popupResult.accessToken, expiresIn);
+        return popupResult.accessToken;
+      }
+    } catch (popupErr: unknown) {
+      const err = popupErr as { errorCode?: string; message?: string };
+      const blocked = err.errorCode === 'popup_window_error' || err.errorCode === 'user_cancelled' ||
+        (err.message && err.message.toLowerCase().indexOf('popup') !== -1);
+      if (!blocked) throw popupErr;
+      // Popup blocked or cancelled: fall back to redirect
+      await loginRedirect();
+      return null;
+    }
+    // No accounts and popup didn't run or didn't return token: use redirect
     await loginRedirect();
     return null;
   }
+
   try {
     const t = await instance.acquireTokenSilent({ scopes: [dataverseScope], account: accounts[0] });
     if (t.accessToken && t.expiresOn) {
@@ -145,8 +186,17 @@ export async function ensureLoginOrRedirect(): Promise<string | null> {
       return t.accessToken;
     }
   } catch {
-    await instance.acquireTokenRedirect({ scopes: [dataverseScope], account: accounts[0] });
-    return null;
+    try {
+      const popupResponse = await instance.acquireTokenPopup({ scopes: [dataverseScope], account: accounts[0] });
+      if (popupResponse.accessToken && popupResponse.expiresOn) {
+        const expiresIn = Math.floor((popupResponse.expiresOn.getTime() - Date.now()) / 1000);
+        storeToken(popupResponse.accessToken, expiresIn);
+        return popupResponse.accessToken;
+      }
+    } catch {
+      await instance.acquireTokenRedirect({ scopes: [dataverseScope], account: accounts[0] });
+      return null;
+    }
   }
   return null;
 }

@@ -44,11 +44,17 @@ Short summary on functionality and used technologies.
 
 - Clone this repository
 - Ensure that you are at the solution folder
-- in the command-line run:
+- In the command-line run:
   - **npm install**
-  - **gulp serve**
+  - **gulp serve** (or **npm run serve**)
 
-> Include any additional steps as needed.
+If the browser opens the hosted workbench and you see errors like **"blocked by CORS policy... loopback address space"** or **manifests.js net::ERR_TIMED_OUT**, use the Chrome workaround:
+
+1. Run **npm run serve:debug** (starts the dev server without opening the workbench).
+2. Open a SharePoint site page and add this to the URL: **?loadSPFX=true&debugManifestsFile=https://localhost:4321/temp/manifests.js**
+3. When prompted, click **Load debug scripts**.
+
+See **[DEVELOP.md](./DEVELOP.md)** for full details and other options (Edge/Firefox, deploy to app catalog).
 
 ## Features
 
